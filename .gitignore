@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+
+# Personal notes / scratch docs (kept local)
+doc/
