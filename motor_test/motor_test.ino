@@ -1,7 +1,7 @@
-int IN1 = 10;
-int IN2 = 9;
-int IN3 = 12;
-int IN4 = 11;
+int IN1 = 12;
+int IN2 = 11;
+int IN3 = 10;
+int IN4 = 9;
 int ENA = 6; //Turn motor on off
 
 void setup() {
