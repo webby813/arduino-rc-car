@@ -3,3 +3,11 @@
 
 # Personal notes / scratch docs (kept local)
 doc/
+
+# PlatformIO
+.pio/
+
+# IDE
+.vscode/
+.idea/
+*.iml
