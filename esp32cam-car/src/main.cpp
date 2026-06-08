@@ -114,6 +114,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
   char part_buf[64];
   while (true) {
+    int64_t fr_start = esp_timer_get_time();
 
     fb = esp_camera_fb_get();
     if (!fb) { res = ESP_FAIL; break; }
@@ -127,6 +128,9 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     }
     esp_camera_fb_return(fb);
 
+    // Cap at ~20fps — prevents flooding the connection
+    int64_t elapsed = (esp_timer_get_time() - fr_start) / 1000;
+    if (elapsed < 50) delay(50 - elapsed);
   }
   return res;
 }
@@ -171,14 +175,14 @@ static bool initCamera() {
 
   // With PSRAM we can afford a bigger frame + double buffering.
   if (psramFound()) {
-    config.frame_size   = FRAMESIZE_QVGA;  // 320x240
-    config.jpeg_quality = 12;              // 10=best quality, 63=smallest file
+    config.frame_size   = FRAMESIZE_QQVGA; // 160x120 — fast and low latency
+    config.jpeg_quality = 35;              // 10=best quality, 63=smallest file
     config.fb_count     = 2;
     config.grab_mode    = CAMERA_GRAB_LATEST;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
   } else {
-    config.frame_size   = FRAMESIZE_QVGA;  // 320x240
-    config.jpeg_quality = 12;
+    config.frame_size   = FRAMESIZE_QQVGA; // 160x120
+    config.jpeg_quality = 35;
     config.fb_count     = 1;
   }
 
