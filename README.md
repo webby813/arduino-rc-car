@@ -101,8 +101,10 @@ Single-character WebSocket messages (UART to the Uno uses the same drive chars):
 independently stops after 1 s of UART silence (the ESP32 re-sends the active
 command every 300 ms while driving). Either board failing still stops the car.
 
-**Hotspot credentials:** SSID `RC-CAR`, password `rccar1234` — both set at the
-top of `esp32cam-car/src/main.cpp`. Change the password before sharing your car.
+**Hotspot credentials:** SSID `RC-CAR`, password `rccar1234` by default. To use
+your own, copy `.env.dev` to `.env` (gitignored) and edit it — the values are
+injected into the firmware at build time. Change the password before sharing
+your car.
 
 ---
 
@@ -119,7 +121,7 @@ The Uno here is ONLY a USB-to-serial passthrough. Wire it like this:
 | `TX (1)`         | `U0T` (GPIO1)     |
 | —                | `GPIO0` → `GND`   |
 
-1. (Optional) Edit `esp32cam-car/src/main.cpp` → change `AP_SSID` / `AP_PASS`.
+1. (Optional) `cp .env.dev .env` and set your own `AP_SSID` / `AP_PASS` there.
 2. `GPIO0` must be tied to `GND` (flash mode).
 3. Upload. When the log shows `Connecting....____`, press **RST** on the ESP32-CAM.
 4. After "Done", **remove the GPIO0–GND wire** and press **RST**.

@@ -23,8 +23,15 @@
 #include "esp_http_server.h"
 
 // ----------------------- USER CONFIG --------------------------------------
-const char *AP_SSID = "RC-CAR";
-const char *AP_PASS = "rccar1234"; // WPA2, min 8 chars — change before sharing!
+// Hotspot credentials the car broadcasts. Don't edit here — put your own in
+// a .env file at the repo root (copy .env.dev); load_env.py injects them at
+// build time. These are only the fallback defaults.
+#ifndef AP_SSID
+#define AP_SSID "RC-CAR"
+#endif
+#ifndef AP_PASS
+#define AP_PASS "rccar1234" // WPA2 requires at least 8 characters
+#endif
 
 // Video tuning (single-point tunables; see doc/notes.md)
 #define VIDEO_FRAME_SIZE   FRAMESIZE_QVGA // 320x240 over the direct AP link

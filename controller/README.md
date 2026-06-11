@@ -21,9 +21,9 @@ flutter build ios --release     # iOS (requires Xcode signing setup)
 ## Use
 
 1. Power on the car.
-2. Join the WiFi hotspot **`RC-CAR`** (default password `rccar1234`, set in
-   `esp32cam-car/src/main.cpp`). Stay connected even if the phone warns there
-   is no internet.
+2. Join the WiFi hotspot **`RC-CAR`** (default password `rccar1234`; custom
+   credentials go in the repo-root `.env`, see `.env.dev`). Stay connected
+   even if the phone warns there is no internet.
 3. Open the app — it finds the car at `192.168.4.1` automatically.
 
 Hold a D-pad direction to drive, release to stop. Hold **TURBO** with your

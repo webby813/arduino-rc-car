@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Private credentials (template: .env.dev)
+.env
+
 # Personal notes / scratch docs (kept local)
 doc/
 
