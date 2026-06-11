@@ -1,9 +1,21 @@
 // ===========================================================================
-//  ESP32-CAM RC Car  —  video stream + Wi-Fi control (Option B)
-//  - Streams MJPEG video on  http://<ip>:81/stream
-//  - Serves a control page on http://<ip>/
-//  - Sends single-char drive commands (F/B/L/R/S) over UART to the Arduino Uno
-//    which actually drives the L298N motors.
+//  ESP32-CAM RC Car  —  SoftAP + WebSocket control + MJPEG video
+//  - Broadcasts its own Wi-Fi hotspot (no router needed), fixed IP 192.168.4.1
+//  - WebSocket control endpoint on ws://192.168.4.1/ws  (Flutter app)
+//  - Fallback web control page on    http://192.168.4.1/
+//  - Streams MJPEG video on          http://192.168.4.1:81/stream
+//  - Relays single-char drive commands over UART to the Arduino Uno (L298N)
+//
+//  Control protocol (WebSocket text messages):
+//    F/B/L/R  drive while held        S  stop
+//    T/N      turbo on / normal speed
+//    C1/C0    camera stream on / off
+//    H1/H0    headlight (flash LED) on / off
+//    P        heartbeat ping (app sends every 250 ms)
+//
+//  Failsafe: if the control socket goes silent for CTRL_TIMEOUT_MS the car
+//  stops. While driving, the active command is re-sent to the Uno every
+//  UART_KEEPALIVE_MS so the Uno's own 1 s watchdog stays fed.
 // ===========================================================================
 
 #include "esp_camera.h"
@@ -11,8 +23,19 @@
 #include "esp_http_server.h"
 
 // ----------------------- USER CONFIG --------------------------------------
-const char *WIFI_SSID = "YourWiFiName";
-const char *WIFI_PASS = "YourWiFiPassword";
+const char *AP_SSID = "RC-CAR";
+const char *AP_PASS = "rccar1234"; // WPA2, min 8 chars — change before sharing!
+
+// Video tuning (single-point tunables; see doc/notes.md)
+#define VIDEO_FRAME_SIZE   FRAMESIZE_QVGA // 320x240 over the direct AP link
+#define VIDEO_JPEG_QUALITY 20             // 10=best quality, 63=smallest file
+
+// Failsafe timings
+#define CTRL_TIMEOUT_MS   600  // stop if WS control goes silent this long
+#define UART_KEEPALIVE_MS 300  // re-send active drive char to feed Uno watchdog
+
+// Headlight: onboard flash LED (GPIO 4 is free — SD card is not used)
+#define HEADLIGHT_PIN 4
 
 // UART that talks to the Uno.  ESP32 TX(GPIO13) -> Uno RX(pin 2).
 // We only transmit, so the RX pin (14) is just a placeholder.
@@ -42,13 +65,21 @@ HardwareSerial UnoSerial(1); // use UART1
 httpd_handle_t controlServer = NULL;
 httpd_handle_t streamServer  = NULL;
 
+// --------------------- SHARED STATE (httpd tasks <-> loop) ----------------
+volatile int      ctrlFd      = -1;  // fd of the single WS control client
+volatile uint32_t lastCtrlMs  = 0;   // last time any WS message arrived
+volatile char     activeDrive = 'S'; // current drive command (S = stopped)
+volatile uint32_t lastUartMs  = 0;   // last time a drive char went to the Uno
+volatile bool     cameraOn    = true;
+volatile bool     streamBusy  = false;
+
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char *STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char *STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-// ----------------------- CONTROL PAGE -------------------------------------
+// ----------------------- CONTROL PAGE (fallback) ---------------------------
 static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ESP32-CAM RC Car</title><style>
@@ -84,12 +115,57 @@ button:active{background:#194}
 </body></html>
 )rawliteral";
 
+// ----------------------- CONTROL HANDLING ---------------------------------
+static void sendToUno(char c) {
+  UnoSerial.write(c);
+  lastUartMs = millis();
+}
+
+static void handleDriveChar(char c) {
+  activeDrive = c;
+  sendToUno(c);
+}
+
+// Stop the car and reset speed; called when the control link is lost.
+static void failsafeStop(const char *reason) {
+  sendToUno('S');
+  sendToUno('N');
+  activeDrive = 'S';
+  Serial.printf("FAILSAFE stop: %s\n", reason);
+}
+
+static void handleControlMsg(const char *msg, size_t len) {
+  if (len == 0) return;
+  char c = msg[0];
+  switch (c) {
+    case 'F': case 'B': case 'L': case 'R': case 'S':
+      handleDriveChar(c);
+      break;
+    case 'T': case 'N':
+      sendToUno(c);
+      break;
+    case 'C':
+      if (len > 1) cameraOn = (msg[1] == '1');
+      break;
+    case 'H':
+      if (len > 1) digitalWrite(HEADLIGHT_PIN, (msg[1] == '1') ? HIGH : LOW);
+      break;
+    case 'P': // heartbeat — arrival time is recorded by the caller
+      break;
+    default:
+      Serial.printf("unknown ctrl msg: %c\n", c);
+      break;
+  }
+}
+
 // ----------------------- HTTP HANDLERS ------------------------------------
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
 }
 
+// Legacy endpoint used by the fallback web page. Goes through the same drive
+// path so the UART keep-alive also feeds the Uno watchdog for web users.
 static esp_err_t cmd_handler(httpd_req_t *req) {
   char query[32];
   char value[4] = {0};
@@ -97,7 +173,7 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     if (httpd_query_key_value(query, "go", value, sizeof(value)) == ESP_OK) {
       char c = value[0];
       if (c == 'F' || c == 'B' || c == 'L' || c == 'R' || c == 'S') {
-        UnoSerial.write(c);            // forward command to the Uno
+        handleDriveChar(c);
         Serial.printf("cmd -> %c\n", c);
       }
     }
@@ -106,32 +182,71 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   return httpd_resp_send(req, "ok", 2);
 }
 
+// WebSocket control endpoint. One client at a time: newest connection wins.
+static esp_err_t ws_handler(httpd_req_t *req) {
+  if (req->method == HTTP_GET) { // handshake completed
+    int fd = httpd_req_to_sockfd(req);
+    int old = ctrlFd;
+    if (old >= 0 && old != fd) {
+      httpd_sess_trigger_close(controlServer, old);
+    }
+    ctrlFd = fd;
+    lastCtrlMs = millis();
+    Serial.printf("WS control client connected (fd %d)\n", fd);
+    return ESP_OK;
+  }
+
+  httpd_ws_frame_t frame = {};
+  frame.type = HTTPD_WS_TYPE_TEXT;
+  esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0); // query frame length
+  if (ret != ESP_OK) return ret;
+
+  uint8_t buf[8] = {0};
+  if (frame.len > 0 && frame.len < sizeof(buf)) {
+    frame.payload = buf;
+    ret = httpd_ws_recv_frame(req, &frame, frame.len);
+    if (ret != ESP_OK) return ret;
+    handleControlMsg((const char *)buf, frame.len);
+  }
+  lastCtrlMs = millis();
+  return ESP_OK;
+}
+
 static esp_err_t stream_handler(httpd_req_t *req) {
+  if (!cameraOn || streamBusy) { // camera off, or one viewer already active
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_send(req, NULL, 0);
+  }
+  streamBusy = true;
+
   camera_fb_t *fb = NULL;
   esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
-  if (res != ESP_OK) return res;
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  if (res == ESP_OK) {
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-  char part_buf[64];
-  while (true) {
-    int64_t fr_start = esp_timer_get_time();
+    char part_buf[64];
+    while (cameraOn) {
+      int64_t fr_start = esp_timer_get_time();
 
-    fb = esp_camera_fb_get();
-    if (!fb) { res = ESP_FAIL; break; }
+      fb = esp_camera_fb_get();
+      if (!fb) { res = ESP_FAIL; break; }
 
-    size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, fb->len);
-    if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
-        httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
-        httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len) != ESP_OK) {
+      size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, fb->len);
+      if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
+          httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK ||
+          httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len) != ESP_OK) {
+        esp_camera_fb_return(fb);
+        break;
+      }
       esp_camera_fb_return(fb);
-      break;
-    }
-    esp_camera_fb_return(fb);
 
-    // Cap at ~20fps — prevents flooding the connection
-    int64_t elapsed = (esp_timer_get_time() - fr_start) / 1000;
-    if (elapsed < 50) delay(50 - elapsed);
+      // Cap at ~20fps — prevents flooding the connection
+      int64_t elapsed = (esp_timer_get_time() - fr_start) / 1000;
+      if (elapsed < 50) delay(50 - elapsed);
+    }
   }
+
+  streamBusy = false;
   return res;
 }
 
@@ -142,17 +257,35 @@ static void startServers() {
   config.server_port = 80;
   config.ctrl_port   = 32768;
   if (httpd_start(&controlServer, &config) == ESP_OK) {
-    httpd_uri_t index_uri = {"/",    HTTP_GET, index_handler, NULL};
-    httpd_uri_t cmd_uri   = {"/cmd", HTTP_GET, cmd_handler,   NULL};
+    httpd_uri_t index_uri = {};
+    index_uri.uri     = "/";
+    index_uri.method  = HTTP_GET;
+    index_uri.handler = index_handler;
+
+    httpd_uri_t cmd_uri = {};
+    cmd_uri.uri     = "/cmd";
+    cmd_uri.method  = HTTP_GET;
+    cmd_uri.handler = cmd_handler;
+
+    httpd_uri_t ws_uri = {};
+    ws_uri.uri          = "/ws";
+    ws_uri.method       = HTTP_GET;
+    ws_uri.handler      = ws_handler;
+    ws_uri.is_websocket = true;
+
     httpd_register_uri_handler(controlServer, &index_uri);
     httpd_register_uri_handler(controlServer, &cmd_uri);
+    httpd_register_uri_handler(controlServer, &ws_uri);
   }
 
   // Stream server on port 81
   config.server_port = 81;
   config.ctrl_port   = 32769;
   if (httpd_start(&streamServer, &config) == ESP_OK) {
-    httpd_uri_t stream_uri = {"/stream", HTTP_GET, stream_handler, NULL};
+    httpd_uri_t stream_uri = {};
+    stream_uri.uri     = "/stream";
+    stream_uri.method  = HTTP_GET;
+    stream_uri.handler = stream_handler;
     httpd_register_uri_handler(streamServer, &stream_uri);
   }
 }
@@ -175,13 +308,13 @@ static bool initCamera() {
 
   // With PSRAM we can afford a bigger frame + double buffering.
   if (psramFound()) {
-    config.frame_size   = FRAMESIZE_QQVGA; // 160x120 — fast and low latency
-    config.jpeg_quality = 35;              // 10=best quality, 63=smallest file
+    config.frame_size   = VIDEO_FRAME_SIZE;
+    config.jpeg_quality = VIDEO_JPEG_QUALITY;
     config.fb_count     = 2;
     config.grab_mode    = CAMERA_GRAB_LATEST;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
   } else {
-    config.frame_size   = FRAMESIZE_QQVGA; // 160x120
+    config.frame_size   = FRAMESIZE_QQVGA; // no PSRAM: stay small
     config.jpeg_quality = 35;
     config.fb_count     = 1;
   }
@@ -198,6 +331,9 @@ void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(false);
 
+  pinMode(HEADLIGHT_PIN, OUTPUT);
+  digitalWrite(HEADLIGHT_PIN, LOW); // headlight off at boot
+
   UnoSerial.begin(UNO_BAUD, SERIAL_8N1, UNO_RX_PIN, UNO_TX_PIN);
 
   if (!initCamera()) {
@@ -205,17 +341,31 @@ void setup() {
     return;
   }
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
   WiFi.setSleep(false);
-  Serial.print("Connecting to Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED) { delay(400); Serial.print("."); }
-  Serial.println();
 
   startServers();
-  Serial.print("Ready! Open  http://");
-  Serial.println(WiFi.localIP());
+  Serial.printf("Ready! Hotspot \"%s\"  ->  http://%s/\n",
+                AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {
-  delay(1000); // everything runs in the HTTP server tasks
+  uint32_t now = millis();
+
+  // Failsafe: WS control client went silent (covers app kill, out of range,
+  // and socket close — all of them stop the message flow).
+  if (ctrlFd >= 0 && (now - lastCtrlMs) > CTRL_TIMEOUT_MS) {
+    int fd = ctrlFd;
+    ctrlFd = -1;
+    httpd_sess_trigger_close(controlServer, fd);
+    failsafeStop("control link silent");
+  }
+
+  // Keep-alive: while driving, refresh the Uno's UART watchdog.
+  if (activeDrive != 'S' && (now - lastUartMs) > UART_KEEPALIVE_MS) {
+    sendToUno(activeDrive);
+  }
+
+  delay(20);
 }

@@ -11,3 +11,13 @@ doc/
 .vscode/
 .idea/
 *.iml
+
+# Flutter / Dart (controller app)
+controller/build/
+controller/.dart_tool/
+controller/.flutter-plugins
+controller/.flutter-plugins-dependencies
+controller/ios/Pods/
+controller/ios/.symlinks/
+controller/android/.gradle/
+controller/android/local.properties
