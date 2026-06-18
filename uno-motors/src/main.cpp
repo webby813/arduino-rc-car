@@ -18,15 +18,15 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 
-// --- L298N pins (your original layout) ---
-const int IN1 = 12;  // left motor
+// --- L298N pins ---
+const int IN1 = 12;  // right motor (OUT1/OUT2)
 const int IN2 = 11;
-const int IN3 = 10;  // right motor
+const int IN3 = 10;  // left motor (OUT3/OUT4)
 const int IN4 = 9;
 const int ENA = 6;   // enable / speed (PWM)
-const int ENB = 5;   // second enable — wire to L298N ENB (or jumper it on the board)
+const int ENB = 5;
 
-const int SPEED_NORMAL = 200; // 0-255 PWM duty
+const int SPEED_NORMAL = 200; // 0-255 PWM duty (boot default)
 const int SPEED_TURBO  = 255;
 
 const unsigned long WATCHDOG_MS = 1000; // stop if UART silent this long while moving
@@ -44,16 +44,44 @@ void stopMotors() {
   moveState = 'S';
 }
 
-void drive(bool l1, bool l2, bool r1, bool r2) {
-  digitalWrite(IN1, l1); digitalWrite(IN2, l2);
-  digitalWrite(IN3, r1); digitalWrite(IN4, r2);
+// --- Motor direction --------------------------------------------------------
+// The two gear motors are mounted FACING EACH OTHER (mirror image), so the same
+// electrical polarity spins them in OPPOSITE directions in the real world. We
+// encode that mirroring in ONE place below: setLeft()/setRight() take a
+// WORLD-space direction (+1 = that wheel drives the car forward, -1 = back,
+// 0 = coast). The right motor's pins are simply the inverse of the left's.
+//
+// Tuning if a direction comes out wrong:
+//   * Whole car drives backwards on 'F'  -> swap BOTH lines: flip LEFT_FWD and RIGHT_FWD.
+//   * Only one side runs the wrong way   -> flip just that side's constant.
+//   * Left/right turns swapped           -> swap the L and R cases in handle().
+const bool LEFT_FWD  = HIGH;  // left motor (IN3/IN4): forward = IN3 LEFT_FWD , IN4 !LEFT_FWD
+const bool RIGHT_FWD = LOW;   // right motor (IN1/IN2): forward = IN1 RIGHT_FWD, IN2 !RIGHT_FWD (whole right channel reversed to match left)
+
+void setLeft(int dir) {   // IN3/IN4, enabled by ENB
+  if (dir == 0) { digitalWrite(IN3, LOW); digitalWrite(IN4, LOW); return; }
+  bool fwd = dir > 0;
+  digitalWrite(IN3, fwd ?  LEFT_FWD : !LEFT_FWD);
+  digitalWrite(IN4, fwd ? !LEFT_FWD :  LEFT_FWD);
+}
+
+void setRight(int dir) {  // IN1/IN2, enabled by ENA
+  if (dir == 0) { digitalWrite(IN1, LOW); digitalWrite(IN2, LOW); return; }
+  bool fwd = dir > 0;
+  digitalWrite(IN1, fwd ?  RIGHT_FWD : !RIGHT_FWD);
+  digitalWrite(IN2, fwd ? !RIGHT_FWD :  RIGHT_FWD);
+}
+
+void drive(int leftDir, int rightDir) {
+  setLeft(leftDir); 
+  setRight(rightDir);
   analogWrite(ENA, speedLevel); analogWrite(ENB, speedLevel);
 }
 
-void forward()  { drive(LOW, HIGH, HIGH, LOW); }
-void backward() { drive(HIGH, LOW, LOW, HIGH); }
-void left()     { drive(HIGH, LOW, HIGH, LOW); }  // spin in place
-void right()    { drive(LOW, HIGH, LOW, HIGH); }
+void forward()  { drive(+1, +1); }  // both wheels roll the car forward
+void backward() { drive(-1, -1); }  // both wheels roll the car backward
+void left()     { drive(-1, +1); }  // spin in place: left back, right forward
+void right()    { drive(+1, -1); }  // spin in place: left forward, right back
 
 // Re-apply PWM so a speed change takes effect on motion already in progress.
 void applySpeed() {
