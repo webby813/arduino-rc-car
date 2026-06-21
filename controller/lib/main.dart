@@ -39,6 +39,10 @@ class _RcCarAppState extends State<RcCarApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.inactive:
+        // Brief interruption (Control Center, a notification banner). Keep the
+        // link up — suspending here caused needless disconnect/reconnect churn.
+        // A real backgrounding still fires `paused`/`hidden` below.
+        break;
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:

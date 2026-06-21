@@ -37,8 +37,11 @@
 #define VIDEO_FRAME_SIZE   FRAMESIZE_QVGA // 320x240 over the direct AP link
 #define VIDEO_JPEG_QUALITY 20             // 10=best quality, 63=smallest file
 
-// Failsafe timings
-#define CTRL_TIMEOUT_MS   600  // stop if WS control goes silent this long
+// Failsafe timings. CTRL_TIMEOUT must allow several missed heartbeats so a
+// brief RF/video-contention hiccup doesn't tear the socket down and force a
+// reconnect; the app now beats every 150 ms, so 900 ms = ~6 beats of margin
+// while still stopping the car within ~1 s of a genuine link loss.
+#define CTRL_TIMEOUT_MS   900  // stop if WS control goes silent this long
 #define UART_KEEPALIVE_MS 300  // re-send active drive char to feed Uno watchdog
 
 // Headlight: onboard flash LED (GPIO 4 is free — SD card is not used)
@@ -259,10 +262,22 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
 static void startServers() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  // Reclaim the least-recently-used socket instead of locking out. Without
+  // this, half-open/stale sockets left by phone reconnects slowly fill every
+  // slot and httpd silently refuses ALL new connections until a power cycle —
+  // the "hotspot is alive but the app is stuck Looking for the car" failure.
+  config.lru_purge_enable    = true;
+  // httpd_config_t on the Arduino-ESP32 core has no keep_alive_* fields (those
+  // are not part of this esp_http_server API). Use the real recv/send timeouts
+  // so a stalled socket from a vanished phone is torn down instead of holding a
+  // slot; combined with lru_purge_enable above this clears the slow socket leak.
+  config.recv_wait_timeout   = 5;  // s before a stalled recv frees the socket
+  config.send_wait_timeout   = 5;  // s before a stalled send frees the socket
 
   // Control server on port 80
-  config.server_port = 80;
-  config.ctrl_port   = 32768;
+  config.server_port      = 80;
+  config.ctrl_port        = 32768;
+  config.max_open_sockets = 7; // control link + reconnect churn headroom
   if (httpd_start(&controlServer, &config) == ESP_OK) {
     httpd_uri_t index_uri = {};
     index_uri.uri     = "/";
@@ -285,9 +300,13 @@ static void startServers() {
     httpd_register_uri_handler(controlServer, &ws_uri);
   }
 
-  // Stream server on port 81
-  config.server_port = 81;
-  config.ctrl_port   = 32769;
+  // Stream server on port 81. Only ever one viewer, so keep its socket budget
+  // small — the two servers share the global LWIP socket pool, and starving
+  // the control server is what caused the lockout. lru_purge/keep-alive carry
+  // over from the config above.
+  config.server_port      = 81;
+  config.ctrl_port        = 32769;
+  config.max_open_sockets = 3;
   if (httpd_start(&streamServer, &config) == ESP_OK) {
     httpd_uri_t stream_uri = {};
     stream_uri.uri     = "/stream";

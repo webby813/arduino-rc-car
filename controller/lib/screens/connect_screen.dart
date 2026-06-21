@@ -80,6 +80,14 @@ class ConnectScreen extends StatelessWidget {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: connection.reconnectNow,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry now'),
+                    ),
+                  ),
                 ],
               ),
             ),

@@ -12,8 +12,12 @@ enum CarConnectionState { disconnected, connecting, connected }
 class CarConnection extends ChangeNotifier {
   static const String defaultHost = '192.168.4.1';
   static const String hotspotName = 'RC-CAR';
-  static const Duration _heartbeatPeriod = Duration(milliseconds: 250);
-  static const Duration _retryDelay = Duration(seconds: 2);
+  static const Duration _heartbeatPeriod = Duration(milliseconds: 150);
+  static const Duration _retryDelay = Duration(milliseconds: 700);
+  // A locked-out server can accept the TCP socket but never finish the
+  // WebSocket upgrade; cap how long we wait so a stalled connect retries
+  // instead of hanging forever on "Looking for the car".
+  static const Duration _connectTimeout = Duration(seconds: 3);
   static const String _hostPrefKey = 'car_host';
 
   String _host = defaultHost;
@@ -24,6 +28,10 @@ class CarConnection extends ChangeNotifier {
   Timer? _retry;
   bool _suspended = false;
   bool _disposed = false;
+  // Bumped on every teardown so a connect attempt that resolves late (e.g. a
+  // stalled handshake that finally times out) can tell it has been superseded
+  // and quietly bow out instead of clobbering a newer connection.
+  int _generation = 0;
 
   String activeDrive = 'S';
   bool turboOn = false;
@@ -62,11 +70,23 @@ class CarConnection extends ChangeNotifier {
     _open();
   }
 
+  /// Force an immediate reconnect, e.g. from a manual "Retry" button. Works
+  /// even while a previous attempt is mid-handshake: teardown bumps the
+  /// generation so the stalled attempt bows out, then we start fresh.
+  void reconnectNow() {
+    if (_suspended || _disposed) return;
+    _teardown();
+    _setState(CarConnectionState.disconnected);
+    connect();
+  }
+
   Future<void> _open() async {
+    final gen = ++_generation;
+    WebSocketChannel? channel;
     try {
-      final channel = WebSocketChannel.connect(Uri.parse('ws://$_host/ws'));
-      await channel.ready;
-      if (_suspended || _disposed) {
+      channel = WebSocketChannel.connect(Uri.parse('ws://$_host/ws'));
+      await channel.ready.timeout(_connectTimeout);
+      if (_suspended || _disposed || gen != _generation) {
         channel.sink.close();
         return;
       }
@@ -84,7 +104,8 @@ class CarConnection extends ChangeNotifier {
       if (turboOn) _send('T');
       _setState(CarConnectionState.connected);
     } catch (_) {
-      _onLost();
+      channel?.sink.close();
+      if (gen == _generation) _onLost(); // ignore a superseded attempt
     }
   }
 
@@ -158,6 +179,7 @@ class CarConnection extends ChangeNotifier {
   }
 
   void _teardown() {
+    _generation++; // invalidate any in-flight/stalled connect attempt
     _heartbeat?.cancel();
     _heartbeat = null;
     _retry?.cancel();
