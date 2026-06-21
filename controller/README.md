@@ -11,12 +11,20 @@ Connects directly to the car's own WiFi hotspot — no router or internet needed
 
 Requires the [Flutter SDK](https://docs.flutter.dev/get-started/install) (Android and/or Xcode toolchains).
 
+The hotspot name/password come from the **repo-root `.env`** at build time — the
+same file the ESP32 firmware reads (`load_env.py`), so one file drives both.
+Pass it with `--dart-define-from-file=../.env`:
+
 ```bash
 flutter pub get
-flutter run                      # debug on a connected device
-flutter build apk --release     # Android APK -> build/app/outputs/flutter-apk/
-flutter build ios --release     # iOS (requires Xcode signing setup)
+flutter run   --dart-define-from-file=../.env                   # debug on a connected device
+flutter build apk --release --dart-define-from-file=../.env     # Android APK -> build/app/outputs/flutter-apk/
+flutter build ios --release --dart-define-from-file=../.env     # iOS (requires Xcode signing setup)
 ```
+
+Omit the flag and the app falls back to the defaults `RC-CAR` / `rccar1234`.
+`AP_SSID` and `AP_PASS` in `.env` feed `CarConnection.hotspotName` /
+`hotspotPassword` and the join-the-hotspot instructions on the connect screen.
 
 ## Use
 

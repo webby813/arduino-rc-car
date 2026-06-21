@@ -50,8 +50,9 @@ class ConnectScreen extends StatelessWidget {
                     number: '2',
                     text:
                         'Open your phone\'s WiFi settings and join the hotspot '
-                        '"${CarConnection.hotspotName}". If asked, choose to stay '
-                        'connected even without internet.',
+                        '"${CarConnection.hotspotName}" (password '
+                        '"${CarConnection.hotspotPassword}"). If asked, choose to '
+                        'stay connected even without internet.',
                   ),
                   const _Step(
                     number: '3',

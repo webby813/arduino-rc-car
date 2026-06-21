@@ -11,7 +11,16 @@ enum CarConnectionState { disconnected, connecting, connected }
 /// control message (drive, turbo, camera, headlight).
 class CarConnection extends ChangeNotifier {
   static const String defaultHost = '192.168.4.1';
-  static const String hotspotName = 'RC-CAR';
+  // Hotspot credentials are read from the repo-root .env at BUILD time — the
+  // same file the ESP32 firmware reads via load_env.py, so one .env drives
+  // both. Pass it through when running/building the app:
+  //   flutter run   --dart-define-from-file=../.env
+  //   flutter build --dart-define-from-file=../.env
+  // The defaults below are only fallbacks if the flag is omitted.
+  static const String hotspotName =
+      String.fromEnvironment('AP_SSID', defaultValue: 'RC-CAR');
+  static const String hotspotPassword =
+      String.fromEnvironment('AP_PASS', defaultValue: 'rccar1234');
   static const Duration _heartbeatPeriod = Duration(milliseconds: 150);
   static const Duration _retryDelay = Duration(milliseconds: 700);
   // A locked-out server can accept the TCP socket but never finish the
