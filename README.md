@@ -33,8 +33,8 @@ muscle work, and a phone is the remote:
 | Arduino Uno | Motor control, listens to the ESP32 over SoftwareSerial |
 | L298N dual H-bridge | Drives the left/right motor groups |
 | DC gear motors + wheels | Drive train |
-| 2× 14500 Li-ion in series (~7.4 V) | Motor / Uno supply — **at least 7 V is required**; 2× AA (3 V) will not boot the boards off USB |
-| 5 V phone charger or buck converter (≥1 A) | Separate solid supply for the ESP32-CAM (sharing the Uno's 5 V causes brownouts) |
+| 2× 18500 Li-ion in series (~3.7 V) | Motor / Uno supply, 2× AA (3 V) will not boot the boards off USB |
+| Battery Holder w/ on&off switch | 2 slot battery holder is enough |
 
 `motor_test/motor_test.ino` is a standalone L298N smoke test: upload it with
 any Arduino toolchain and both motors should spin forward for one second.
